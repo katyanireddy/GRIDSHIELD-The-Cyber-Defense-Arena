@@ -20,11 +20,13 @@ import { useSound } from '../../hooks/useSound';
 interface WarRoomScreenProps {
   onTriggerSimulatedAttack: (type: string) => void;
   onClearAttacks: () => void;
+  onExecuteStep: (actionCode: string) => Promise<void>;
 }
 
 export const WarRoomScreen: React.FC<WarRoomScreenProps> = ({
   onTriggerSimulatedAttack,
   onClearAttacks,
+  onExecuteStep,
 }) => {
   const { playClick, playAlert, playIsolate, playSuccess, playHover, playKeypress } = useSound();
 
@@ -62,37 +64,63 @@ export const WarRoomScreen: React.FC<WarRoomScreenProps> = ({
     onTriggerSimulatedAttack(drillKey);
   };
 
-  const handleToggleStep = (stepId: string) => {
-    const step = activePlaybook.steps.find((s) => s.id === stepId);
-    if (!step) return;
+  const handleToggleStep = async (stepId: string) => {
+  const step = activePlaybook.steps.find((s) => s.id === stepId);
+  if (!step) return;
 
-    if (!step.completed) {
-      if (step.actionCode === 'AIRGAP_ISO') {
-        playIsolate();
-      } else {
-        playSuccess();
-      }
+  // If already completed, allow checklist toggle-off
+  if (step.completed) {
+    playClick();
+
+    setPlaybooks((prev) =>
+      prev.map((pb) =>
+        pb.id === activePlaybookId
+          ? {
+              ...pb,
+              steps: pb.steps.map((s) =>
+                s.id === stepId ? { ...s, completed: false } : s
+              ),
+            }
+          : pb
+      )
+    );
+
+    return;
+  }
+
+  try {
+    await onExecuteStep(step.actionCode);
+
+    if (step.actionCode === 'AIRGAP_ISO') {
+      playIsolate();
     } else {
-      playClick();
+      playSuccess();
     }
 
     setPlaybooks((prev) =>
       prev.map((pb) => {
         if (pb.id !== activePlaybookId) return pb;
+
         const updatedSteps = pb.steps.map((s) =>
-          s.id === stepId ? { ...s, completed: !s.completed } : s
+          s.id === stepId ? { ...s, completed: true } : s
         );
 
-        // Check if all steps completed
         const allDone = updatedSteps.every((s) => s.completed);
-        if (allDone) {
-          playSuccess();
-        }
+        if (allDone) playSuccess();
 
         return { ...pb, steps: updatedSteps };
       })
     );
-  };
+  } catch (error) {
+    console.error('Failed to execute playbook step:', error);
+    alert(
+      error instanceof Error
+      ? error.message
+      : 'Playbook step execution failed'
+  );
+  playAlert();
+}
+};
 
   const completedStepCount = activePlaybook.steps.filter((s) => s.completed).length;
   const progressPercent = Math.round((completedStepCount / activePlaybook.steps.length) * 100);

@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { gridAPI, mapBackendNode } from './services/api';
 import { motion, AnimatePresence } from 'motion/react';
 import { HeaderHUD, ScreenId } from './components/HeaderHUD';
 import { FrontPageScreen } from './components/screens/FrontPageScreen';
@@ -22,23 +23,97 @@ export default function App() {
   const [nodes, setNodes] = useState<GridNode[]>(INITIAL_NODES);
   const [connections, setConnections] = useState<GridConnection[]>(INITIAL_CONNECTIONS);
   const [alerts, setAlerts] = useState<SIEMAlert[]>(INITIAL_ALERTS);
-  const [selectedNodeId, setSelectedNodeId] = useState<string>('sub-beta');
+  const [selectedNodeId, setSelectedNodeId] = useState<string>('N-01');
   const [islandModeActive, setIslandModeActive] = useState<boolean>(false);
+    const [apiError, setApiError] = useState<string | null>(null);
+  const [isBackendConnected, setIsBackendConnected] = useState(false);
+
+  const refreshGrid = useCallback(async () => {
+    try {
+      const response = await gridAPI.getGrid();
+      setNodes(
+  Object.entries(response.nodes).map(([id, node]) =>
+    mapBackendNode(node, id)
+  )
+);
+      setIsBackendConnected(true);
+      setApiError(null);
+    } catch (error) {
+      setIsBackendConnected(false);
+      setApiError(
+        error instanceof Error ? error.message : 'Backend connection failed'
+      );
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshGrid();
+  }, [refreshGrid]);
 
   const { playIsolate, playSuccess, playAlert } = useSound();
 
   // Handlers for node defense
-  const handleIsolateNode = (id: string) => {
-    setNodes((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, status: 'isolated' } : n))
+  const handleIsolateNode = async (id: string) => {
+  try {
+    await gridAPI.mitigate([id]);
+    await refreshGrid();
+    playIsolate();
+  } catch (error) {
+    setApiError(
+      error instanceof Error ? error.message : 'Node isolation failed'
     );
-  };
+  }
+};
 
-  const handleRestoreNode = (id: string) => {
-    setNodes((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, status: 'nominal', threatDetails: undefined } : n))
+const handleExecutePlaybookStep = async (actionCode: string) => {
+  if (actionCode === 'AIRGAP_ISO') {
+    await gridAPI.mitigate(['N-01']);
+    await refreshGrid();
+    return;
+  }
+  else if (actionCode === 'FORCE_ISLAND') {
+  await gridAPI.activateIslandMode();
+  await refreshGrid();
+  setIslandModeActive(true);
+}
+else if (actionCode === 'VERIFY_HASH') {
+  const result = await gridAPI.verifyHash();
+  await refreshGrid();
+
+  if (result.integrity_ok) {
+    console.log('Configuration integrity verified.');
+  } else {
+    alert('⚠️ Configuration integrity mismatch detected!');
+  }
+} else {
+  console.log(`Simulated playbook action: ${actionCode}`);
+}
+};
+
+
+
+  const handleRestoreNode = async (id: string) => {
+  try {
+    await gridAPI.recover();
+    await refreshGrid();
+
+    setAlerts((prev) =>
+  prev.map((alert) =>
+    alert.status === 'ACTIVE'
+      ? { ...alert, status: 'CONTAINED' }
+      : alert
+  )
+);
+
+    playSuccess();
+  } catch (error) {
+    setApiError(
+      error instanceof Error
+        ? error.message
+        : 'Grid recovery failed'
     );
-  };
+  }
+};
 
   const handlePatchNode = (id: string) => {
     setNodes((prev) =>
@@ -74,64 +149,120 @@ export default function App() {
   };
 
   // Handlers for SIEM quarantine
-  const handleQuarantineAlert = (alertId: string) => {
-    setAlerts((prev) =>
-      prev.map((a) => (a.id === alertId ? { ...a, status: 'QUARANTINED' } : a))
-    );
-  };
+  const handleQuarantineAlert = async (alertId: string) => {
+  const alert = alerts.find((a) => a.id === alertId);
 
-  const handleContainAlert = (alertId: string) => {
+  if (!alert) {
+    setApiError('Selected alert not found');
+    return;
+  }
+
+  try {
+    await gridAPI.mitigate([alert.targetNodeId]);
+
     setAlerts((prev) =>
-      prev.map((a) => (a.id === alertId ? { ...a, status: 'CONTAINED' } : a))
+      prev.map((a) =>
+        a.id === alertId
+          ? { ...a, status: 'QUARANTINED' }
+          : a
+      )
     );
-  };
+
+    await refreshGrid();
+    playIsolate();
+  } catch (error) {
+    setApiError(
+      error instanceof Error
+        ? error.message
+        : 'Quarantine failed'
+    );
+  }
+};
+const handleContainAlert = async (alertId: string) => {
+  const alert = alerts.find((a) => a.id === alertId);
+
+  if (!alert) {
+    setApiError('Selected alert not found');
+    return;
+  }
+
+  try {
+    await gridAPI.mitigate([alert.targetNodeId]);
+
+    setAlerts((prev) =>
+      prev.map((a) =>
+        a.id === alertId ? { ...a, status: 'CONTAINED' } : a
+      )
+    );
+
+    await refreshGrid();
+    playSuccess();
+  } catch (error) {
+    setApiError(
+      error instanceof Error ? error.message : 'Alert containment failed'
+    );
+  }
+};
 
   // Simulation drill trigger
-  const handleTriggerSimulatedAttack = (type: string) => {
-    if (type === 'aurora') {
-      setNodes((prev) =>
-        prev.map((n) =>
-          n.id === 'gen-01'
-            ? {
-                ...n,
-                status: 'alert',
-                frequencyHz: 59.82,
-                threatDetails: {
-                  vector: 'Simulated Aurora Out-of-Phase Breaker Close Target',
-                  cve: 'CVE-AURORA-SIM',
-                  mitreId: 'T0855 / T0882',
-                  payloadSnippet: '05 64 00 12 FF 01 00 80',
-                  detectedAt: 'LIVE DRILL',
-                  packetCount: 940,
-                },
-              }
-            : n
-        )
-      );
-      setSelectedNodeId('gen-01');
-    } else if (type === 'blacksky') {
-      handleToggleIslandMode();
-    } else if (type === 'ransomware') {
-      setNodes((prev) =>
-        prev.map((n) =>
-          n.id === 'sub-beta'
-            ? {
-                ...n,
-                status: 'alert',
-                frequencyHz: 59.88,
-              }
-            : n
-        )
-      );
-      setSelectedNodeId('sub-beta');
-    }
-  };
+  const handleTriggerSimulatedAttack = async (type: string) => {
+  // Current backend supports False Data Injection simulation.
+  // Target the North Substation for the demo.
+  const targetNodeId = 'N-01';
 
-  const handleClearAttacks = () => {
-    setNodes(INITIAL_NODES);
-    setAlerts(INITIAL_ALERTS);
+  try {
+    playAlert();
+
+    await gridAPI.attack([targetNodeId], 0.12);
+
+    // Refresh telemetry after attack
+    await refreshGrid();
+
+    // Run AI detection against the changed telemetry
+    const detectionResponse = await gridAPI.detect();
+
+    const detections = detectionResponse.detections ?? [];
+
+    const newAlerts: SIEMAlert[] = detections.map((detection, index) => ({
+      id: `FDI-${Date.now()}-${index}`,
+      timestamp: new Date().toISOString(),
+      sourceIp: 'SIMULATED-ATTACKER',
+      targetNodeId: detection.node_id,
+      threatType: detection.prediction,
+      severity: detection.anomaly_score >= 80 ? 'CRITICAL' : 'WARNING',
+      protocol: 'SIMULATED',
+      mitreTechnique: 'T0855',
+      description: detection.reason,
+      status: 'ACTIVE',
+      rawHex: 'SIMULATED FDI TELEMETRY',
+    }));
+
+    setAlerts(newAlerts);
+    setSelectedNodeId(targetNodeId);
+  } catch (error) {
+    setApiError(
+      error instanceof Error ? error.message : 'Attack simulation failed'
+    );
+  }
+};
+
+  const handleClearAttacks = async () => {
+  try {
+    await gridAPI.reset();
+    await refreshGrid();
+
+    setAlerts([]);
     setIslandModeActive(false);
-  };
+    setSelectedNodeId('N-01');
+    setApiError(null);
+
+    playSuccess();
+  } catch (error) {
+    setApiError(
+      error instanceof Error ? error.message : 'Simulation reset failed'
+    );
+  }
+};
 
   const activeAlertCount = alerts.filter((a) => a.status === 'ACTIVE').length;
 
@@ -245,6 +376,7 @@ export default function App() {
               <WarRoomScreen
                 onTriggerSimulatedAttack={handleTriggerSimulatedAttack}
                 onClearAttacks={handleClearAttacks}
+                onExecuteStep={handleExecutePlaybookStep}
               />
             </motion.div>
           )}

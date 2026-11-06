@@ -2,6 +2,8 @@ import asyncio
 import pandas as pd
 import math
 import joblib
+import hashlib
+import json
 from pathlib import Path
 from fastapi import WebSocket, WebSocketDisconnect
 from datetime import datetime, timezone
@@ -40,6 +42,7 @@ GRID_TEMPLATE = {
 }
 
 
+
 def timestamp():
     return datetime.now(timezone.utc).isoformat()
 
@@ -58,6 +61,23 @@ def fresh_grid():
         for node_id, values in GRID_TEMPLATE.items()
     }
 
+def get_baseline_config_hash():
+    config = [
+        {
+            "id": node_id,
+            "name": node["name"],
+            "voltage": node["voltage"],
+            "frequency": node["frequency"],
+            "load": node["load"],
+        }
+        for node_id, node in GRID_TEMPLATE.items()
+    ]
+
+    serialized = json.dumps(config, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
+
+
+BASELINE_CONFIG_HASH = get_baseline_config_hash()
 
 state = {
     "running": True,
@@ -66,6 +86,7 @@ state = {
     "timeline": [],
     "last_detection": [],
     "attack_active": False,
+    "island_mode": False,
 }
 
 
@@ -129,9 +150,63 @@ def reset_simulation():
     state["timeline"] = []
     state["last_detection"] = []
     state["attack_active"] = False
+    state["island_mode"] = False
 
     log_event("SIMULATION_RESET", "Microgrid restored to baseline state.")
     return {"message": "Simulation reset", "grid": state["grid"]}
+
+@app.post("/api/island-mode")
+def activate_island_mode():
+    state["island_mode"] = True
+    state["running"] = True
+
+    log_event(
+        "ISLAND_MODE_ACTIVATED",
+        "Microgrid disconnected from regional grid. Operating in island mode."
+    )
+
+    return {
+        "message": "Island mode activated",
+        "island_mode": state["island_mode"],
+        "grid": state["grid"],
+    }
+
+
+@app.post("/api/verify-hash")
+def verify_hash():
+    current_config = [
+    {
+        "id": node_id,
+        "name": node["name"],
+        "voltage": node["voltage"],
+        "frequency": node["frequency"],
+        "load": node["load"],
+    }
+    for node_id, node in state["grid"].items()
+]
+
+    serialized = json.dumps(current_config, sort_keys=True).encode("utf-8")
+    current_hash = hashlib.sha256(serialized).hexdigest()
+
+    integrity_ok = current_hash == BASELINE_CONFIG_HASH
+
+    log_event(
+        "HASH_VERIFICATION",
+        "Baseline configuration integrity verified."
+        if integrity_ok
+        else "Configuration integrity mismatch detected."
+    )
+
+    return {
+        "integrity_ok": integrity_ok,
+        "baseline_hash": BASELINE_CONFIG_HASH,
+        "current_hash": current_hash,
+        "message": (
+            "Configuration integrity verified."
+            if integrity_ok
+            else "Configuration integrity mismatch detected."
+        ),
+    }
 
 
 @app.post("/api/attack")

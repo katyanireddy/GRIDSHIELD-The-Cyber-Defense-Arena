@@ -393,7 +393,7 @@ export const DigitalTwinScreen: React.FC<DigitalTwinScreenProps> = ({
                         : 'bg-[#111C2D]/90 text-[#dfe2f0] border-[rgba(72,165,255,0.2)] group-hover:border-[#48A5FF]'
                     }`}
                   >
-                    <span>{node.code.split('//')[0].trim()}</span>
+                    <span>{(node.code ?? node.id ?? 'UNKNOWN').split('//')[0].trim()}</span>
                     <span className="block text-[8px] font-mono-code text-[#c0c7d4]/80">
                       {node.activePowerMw} MW
                     </span>
@@ -510,7 +510,7 @@ export const DigitalTwinScreen: React.FC<DigitalTwinScreenProps> = ({
                   className="w-full py-2.5 px-3 rounded bg-[#35E6A1] hover:bg-[#2ce19c] text-[#070B14] font-command font-bold text-xs flex items-center justify-center gap-2 shadow-[0_0_16px_rgba(53,230,161,0.4)] transition-all"
                 >
                   <Unlock className="w-4 h-4" />
-                  <span>RESTORE BUS INTERCONNECT</span>
+                  <span>INITIATE GRID RECOVERY</span>
                 </button>
               ) : (
                 <button
